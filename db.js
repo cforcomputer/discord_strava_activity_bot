@@ -3,9 +3,6 @@ const { Pool } = require("pg");
 // The pool will use the DATABASE_URL environment variable automatically.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false, // Required for some cloud database providers
-  },
 });
 
 // Initializes the database by creating the users table if it doesn't exist.
