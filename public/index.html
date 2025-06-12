@@ -1,0 +1,59 @@
+/*
+================================================================================
+| --- File: public/index.html ---                                            |
+| Description: Simple frontend for user authorization.                       |
+================================================================================
+*/
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strava Discord Bot</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f4f4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            color: #333;
+        }
+        .container {
+            text-align: center;
+            padding: 40px;
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #fc4c02; /* Strava Orange */
+        }
+        p {
+            margin-bottom: 25px;
+        }
+        .strava-button {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: #fc4c02;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        .strava-button:hover {
+            background-color: #e04402;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Strava Activity Bot</h1>
+        <p>Connect your Strava account to automatically post new activities to Discord.</p>
+        <a href="/auth/strava" class="strava-button">Connect with Strava</a>
+    </div>
+</body>
+</html>
