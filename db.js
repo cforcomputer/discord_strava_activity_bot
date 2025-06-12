@@ -1,48 +1,82 @@
-const fs = require("fs").promises;
-const path = require("path");
+const { Pool } = require("pg");
 
-const dbPath = path.join(__dirname, "database.json");
+// The pool will use the DATABASE_URL environment variable automatically.
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // Required for some cloud database providers
+  },
+});
 
-// Reads the entire database from the JSON file.
-async function readDb() {
+// Initializes the database by creating the users table if it doesn't exist.
+async function initializeDb() {
+  const client = await pool.connect();
   try {
-    const data = await fs.readFile(dbPath, "utf8");
-    return JSON.parse(data);
+    await client.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                athlete_id BIGINT PRIMARY KEY,
+                access_token TEXT NOT NULL,
+                refresh_token TEXT NOT NULL,
+                expires_at BIGINT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+    console.log('Database table "users" is ready.');
   } catch (error) {
-    // If the file doesn't exist, return an empty object.
-    if (error.code === "ENOENT") {
-      return {};
-    }
-    console.error("Error reading database:", error);
+    console.error("Error initializing database table:", error);
     throw error;
+  } finally {
+    client.release();
   }
 }
 
-// Writes the entire database object to the JSON file.
-async function writeDb(data) {
-  try {
-    await fs.writeFile(dbPath, JSON.stringify(data, null, 2));
-  } catch (error) {
-    console.error("Error writing to database:", error);
-    throw error;
-  }
-}
-
-// Saves a user's tokens to the database.
+// Saves or updates a user's tokens using an "upsert" operation.
 async function saveToken(athleteId, tokens) {
-  const db = await readDb();
-  db[athleteId] = {
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token,
-    expiresAt: tokens.expires_at,
-  };
-  await writeDb(db);
+  const query = `
+        INSERT INTO users (athlete_id, access_token, refresh_token, expires_at, updated_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (athlete_id)
+        DO UPDATE SET
+            access_token = EXCLUDED.access_token,
+            refresh_token = EXCLUDED.refresh_token,
+            expires_at = EXCLUDED.expires_at,
+            updated_at = NOW();
+    `;
+  const values = [
+    athleteId,
+    tokens.access_token,
+    tokens.refresh_token,
+    tokens.expires_at,
+  ];
+
+  try {
+    await pool.query(query, values);
+  } catch (error) {
+    console.error("Error saving token to database:", error);
+    throw error;
+  }
 }
 
 // Retrieves a user's tokens from the database.
 async function getToken(athleteId) {
-  const db = await readDb();
-  return db[athleteId];
+  const query =
+    "SELECT access_token, refresh_token, expires_at FROM users WHERE athlete_id = $1";
+  try {
+    const result = await pool.query(query, [athleteId]);
+    if (result.rows.length > 0) {
+      // Map column names to the expected object keys
+      return {
+        accessToken: result.rows[0].access_token,
+        refreshToken: result.rows[0].refresh_token,
+        expiresAt: result.rows[0].expires_at,
+      };
+    }
+    return null; // Return null if no user is found
+  } catch (error) {
+    console.error("Error retrieving token from database:", error);
+    throw error;
+  }
 }
 
-module.exports = { saveToken, getToken, readDb };
+module.exports = { initializeDb, saveToken, getToken };

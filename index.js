@@ -1,7 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const path = require("path");
-const { saveToken, getToken } = require("./db");
+const { initializeDb, saveToken, getToken } = require("./db");
 
 // --- Environment Variable Validation ---
 const requiredEnvVars = [
@@ -10,6 +10,7 @@ const requiredEnvVars = [
   "DISCORD_WEBHOOK_URL",
   "APP_URL",
   "STRAVA_VERIFY_TOKEN",
+  "DATABASE_URL", // Added DATABASE_URL
 ];
 for (const varName of requiredEnvVars) {
   if (!process.env[varName]) {
@@ -29,15 +30,13 @@ const PORT = process.env.PORT || 3000;
 
 // --- Express App Setup ---
 const app = express();
-app.use(express.json()); // Middleware to parse JSON bodies
-app.use(express.static(path.join(__dirname, "public"))); // Serve static files
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
 // --- Strava API Configuration ---
 const STRAVA_API_BASE_URL = "https://www.strava.com/api/v3";
 const STRAVA_AUTH_URL = "https://www.strava.com/oauth/authorize";
 const STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token";
-
-let webhookSubscribed = false;
 
 // --- Routes ---
 
@@ -68,11 +67,6 @@ app.get("/auth/callback", async (req, res) => {
     const { access_token, refresh_token, expires_at, athlete } = response.data;
     await saveToken(athlete.id, { access_token, refresh_token, expires_at });
 
-    // After a user successfully authorizes, ensure the webhook is set up.
-    if (!webhookSubscribed) {
-      await subscribeToStravaWebhooks();
-    }
-
     res.send(
       "<h1>Success!</h1><p>Your Strava account is connected. You can close this window.</p>"
     );
@@ -94,7 +88,6 @@ app.get("/webhook", (req, res) => {
   if (mode === "subscribe" && token === STRAVA_VERIFY_TOKEN) {
     console.log("Webhook validated successfully!");
     res.json({ "hub.challenge": challenge });
-    webhookSubscribed = true; // Mark as subscribed after successful validation
   } else {
     console.error("Webhook validation failed.");
     res.sendStatus(403);
@@ -103,24 +96,21 @@ app.get("/webhook", (req, res) => {
 
 app.post("/webhook", async (req, res) => {
   console.log("Received webhook event:", JSON.stringify(req.body, null, 2));
-
-  // Acknowledge the event immediately
   res.status(200).send("EVENT_RECEIVED");
 
-  // Process the event
   if (
     req.body.object_type === "activity" &&
     req.body.aspect_type === "create"
   ) {
     const athleteId = req.body.owner_id;
-    const activityId = req.body.object_id;
-
     try {
       const user = await getToken(athleteId);
       if (!user) throw new Error(`No token found for athlete ${athleteId}`);
 
+      // This is where you would add token refresh logic if needed
+
       const activityResponse = await axios.get(
-        `${STRAVA_API_BASE_URL}/activities/${activityId}`,
+        `${STRAVA_API_BASE_URL}/activities/${req.body.object_id}`,
         {
           headers: { Authorization: `Bearer ${user.accessToken}` },
         }
@@ -134,44 +124,24 @@ app.post("/webhook", async (req, res) => {
 });
 
 // --- Helper Functions ---
-
 async function postActivityToDiscord(activity) {
-  // Convert data for better display
   const distanceKm = (activity.distance / 1000).toFixed(2);
   const movingTime = new Date(activity.moving_time * 1000)
     .toISOString()
     .substr(11, 8);
   const elevation = Math.round(activity.total_elevation_gain);
+  const athleteName = activity.athlete.firstname || "An athlete";
+  const activityType = activity.sport_type.toLowerCase();
 
-  const athleteName = activity.athlete.firstname
-    ? `${activity.athlete.firstname} ${activity.athlete.lastname}`
-    : "An athlete";
+  const content = `[${athleteName}](https://www.strava.com/activities/${activity.id}) just went for a ${activityType} of ${distanceKm}km for ${movingTime}, climbing ${elevation}m.`;
 
-  const embed = {
+  const payload = {
     username: "Strava Bot",
-    avatar_url: "https://i.imgur.com/bM2nKk7.png", // A generic orange running icon
-    embeds: [
-      {
-        author: {
-          name: `${athleteName} just completed an activity!`,
-          url: `https://www.strava.com/athletes/${activity.athlete.id}`,
-        },
-        title: activity.name,
-        url: `https://www.strava.com/activities/${activity.id}`,
-        color: 16737536, // Strava Orange
-        fields: [
-          { name: "Type", value: activity.sport_type, inline: true },
-          { name: "Distance", value: `${distanceKm} km`, inline: true },
-          { name: "Moving Time", value: movingTime, inline: true },
-          { name: "Elevation", value: `${elevation} m`, inline: true },
-        ],
-        timestamp: activity.start_date,
-      },
-    ],
+    content: content,
   };
 
   try {
-    await axios.post(DISCORD_WEBHOOK_URL, embed);
+    await axios.post(DISCORD_WEBHOOK_URL, payload);
     console.log(`Successfully posted activity ${activity.id} to Discord.`);
   } catch (error) {
     console.error(
@@ -181,38 +151,66 @@ async function postActivityToDiscord(activity) {
   }
 }
 
-// This function now attempts to create a subscription.
 async function subscribeToStravaWebhooks() {
   const callbackUrl = `${APP_URL}/webhook`;
   const pushSubscriptionsUrl = `${STRAVA_API_BASE_URL}/push_subscriptions`;
 
   try {
-    // We no longer check for existing subscriptions, just try to create one.
-    // Strava's API will just return the existing subscription if it matches.
-    console.log("Attempting to create or verify webhook subscription...");
-    const response = await axios.post(pushSubscriptionsUrl, {
-      client_id: STRAVA_CLIENT_ID,
-      client_secret: STRAVA_CLIENT_SECRET,
-      callback_url: callbackUrl,
-      verify_token: STRAVA_VERIFY_TOKEN,
+    const getResponse = await axios.get(pushSubscriptionsUrl, {
+      params: {
+        client_id: STRAVA_CLIENT_ID,
+        client_secret: STRAVA_CLIENT_SECRET,
+      },
     });
-    console.log(
-      "Successfully created or verified webhook subscription. ID:",
-      response.data.id
+
+    const existingSubscription = getResponse.data.find(
+      (sub) => sub.callback_url === callbackUrl
     );
-    webhookSubscribed = true;
+
+    if (existingSubscription) {
+      console.log(
+        "Webhook subscription is already active. ID:",
+        existingSubscription.id
+      );
+    } else {
+      console.log(
+        "No active webhook subscription found. Creating a new one..."
+      );
+      const postResponse = await axios.post(
+        pushSubscriptionsUrl,
+        new URLSearchParams({
+          client_id: STRAVA_CLIENT_ID,
+          client_secret: STRAVA_CLIENT_SECRET,
+          callback_url: callbackUrl,
+          verify_token: STRAVA_VERIFY_TOKEN,
+        })
+      );
+      console.log(
+        "Successfully created new webhook subscription. ID:",
+        postResponse.data.id
+      );
+    }
   } catch (error) {
     console.error(
       "Error during webhook subscription process:",
       error.response ? error.response.data : error.message
     );
-    // Set to false so we can retry on the next user auth
-    webhookSubscribed = false;
   }
 }
 
 // --- Server Start ---
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`App URL: ${APP_URL}`);
-});
+async function startServer() {
+  try {
+    await initializeDb();
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log(`App URL: ${APP_URL}`);
+      subscribeToStravaWebhooks();
+    });
+  } catch (error) {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
