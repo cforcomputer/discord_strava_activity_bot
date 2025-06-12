@@ -1,9 +1,3 @@
-/*
-================================================================================
-| --- File: index.js ---                                                     |
-| Description: Main application logic with Express server.                   |
-================================================================================
-*/
 const express = require("express");
 const axios = require("axios");
 const path = require("path");
@@ -39,9 +33,9 @@ app.use(express.json()); // Middleware to parse JSON bodies
 app.use(express.static(path.join(__dirname, "public"))); // Serve static files
 
 // --- Strava API Configuration ---
+const STRAVA_API_BASE_URL = "https://www.strava.com/api/v3";
 const STRAVA_AUTH_URL = "https://www.strava.com/oauth/authorize";
 const STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token";
-const STRAVA_ACTIVITY_URL = "https://www.strava.com/api/v3/activities/";
 
 // --- Routes ---
 
@@ -118,7 +112,7 @@ app.post("/webhook", async (req, res) => {
       if (!user) throw new Error(`No token found for athlete ${athleteId}`);
 
       const activityResponse = await axios.get(
-        `${STRAVA_ACTIVITY_URL}${activityId}`,
+        `${STRAVA_API_BASE_URL}/activities/${activityId}`,
         {
           headers: { Authorization: `Bearer ${user.accessToken}` },
         }
@@ -179,11 +173,51 @@ async function postActivityToDiscord(activity) {
   }
 }
 
+// NEW: Automatically subscribe to webhooks on startup
+async function subscribeToStravaWebhooks() {
+  const callbackUrl = `${APP_URL}/webhook`;
+  const pushSubscriptionsUrl = `${STRAVA_API_BASE_URL}/push_subscriptions`;
+
+  try {
+    // 1. Check for existing subscriptions
+    const response = await axios.get(pushSubscriptionsUrl, {
+      params: {
+        client_id: STRAVA_CLIENT_ID,
+        client_secret: STRAVA_CLIENT_SECRET,
+      },
+    });
+
+    // 2. See if our callback URL is already subscribed
+    const existingSubscription = response.data.find(
+      (sub) => sub.callback_url === callbackUrl
+    );
+
+    if (existingSubscription) {
+      console.log("Webhook subscription is already active.");
+      return;
+    }
+
+    // 3. If not subscribed, create a new subscription
+    console.log("No active webhook subscription found. Creating a new one...");
+    await axios.post(pushSubscriptionsUrl, {
+      client_id: STRAVA_CLIENT_ID,
+      client_secret: STRAVA_CLIENT_SECRET,
+      callback_url: callbackUrl,
+      verify_token: STRAVA_VERIFY_TOKEN,
+    });
+    console.log("Successfully created new webhook subscription.");
+  } catch (error) {
+    console.error(
+      "Error during webhook subscription process:",
+      error.response ? error.response.data : error.message
+    );
+  }
+}
+
 // --- Server Start ---
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`App URL: ${APP_URL}`);
-  console.log(
-    `Ensure your Strava Webhook subscription callback is set to: ${APP_URL}/webhook`
-  );
+  // Call the subscription function after the server is listening
+  subscribeToStravaWebhooks();
 });
