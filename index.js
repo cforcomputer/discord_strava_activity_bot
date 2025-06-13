@@ -65,7 +65,11 @@ app.get("/auth/callback", async (req, res) => {
     });
 
     const { access_token, refresh_token, expires_at, athlete } = response.data;
-    await saveToken(athlete.id, { access_token, refresh_token, expires_at });
+    await saveToken(athlete.id, athlete.firstname, {
+      access_token,
+      refresh_token,
+      expires_at,
+    });
 
     res.send(
       "<h1>Success!</h1><p>Your Strava account is connected. You can close this window.</p>"
@@ -116,7 +120,7 @@ app.post("/webhook", async (req, res) => {
         }
       );
 
-      await postActivityToDiscord(activityResponse.data);
+      await postActivityToDiscord(activityResponse.data, user);
     } catch (error) {
       console.error("Failed to process webhook event:", error.message);
     }
@@ -124,13 +128,13 @@ app.post("/webhook", async (req, res) => {
 });
 
 // --- Helper Functions ---
-async function postActivityToDiscord(activity) {
+async function postActivityToDiscord(activity, user) {
   const distanceKm = (activity.distance / 1000).toFixed(2);
   const movingTime = new Date(activity.moving_time * 1000)
     .toISOString()
     .substr(11, 8);
   const elevation = Math.round(activity.total_elevation_gain);
-  const athleteName = activity.athlete.firstname || "An athlete";
+  const athleteName = user.firstName || "An athlete"; // Use the stored name
   const activityType = activity.sport_type.toLowerCase();
 
   const content = `[${athleteName}](https://www.strava.com/activities/${activity.id}) just went for a ${activityType} of ${distanceKm}km for ${movingTime}, climbing ${elevation}m.`;
