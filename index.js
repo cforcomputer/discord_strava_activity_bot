@@ -10,7 +10,7 @@ const requiredEnvVars = [
   "DISCORD_WEBHOOK_URL",
   "APP_URL",
   "STRAVA_VERIFY_TOKEN",
-  "DATABASE_URL", // Added DATABASE_URL
+  "DATABASE_URL",
 ];
 for (const varName of requiredEnvVars) {
   if (!process.env[varName]) {
@@ -51,11 +51,9 @@ app.get("/auth/strava", (req, res) => {
 // 2. Handle Strava's Redirect
 app.get("/auth/callback", async (req, res) => {
   const { code, error } = req.query;
-
   if (error) {
     return res.status(400).send(`Authorization failed: ${error}`);
   }
-
   try {
     const response = await axios.post(STRAVA_TOKEN_URL, {
       client_id: STRAVA_CLIENT_ID,
@@ -63,14 +61,12 @@ app.get("/auth/callback", async (req, res) => {
       code: code,
       grant_type: "authorization_code",
     });
-
     const { access_token, refresh_token, expires_at, athlete } = response.data;
     await saveToken(athlete.id, athlete.firstname, {
       access_token,
       refresh_token,
       expires_at,
     });
-
     res.send(
       "<h1>Success!</h1><p>Your Strava account is connected. You can close this window.</p>"
     );
@@ -88,7 +84,6 @@ app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
   if (mode === "subscribe" && token === STRAVA_VERIFY_TOKEN) {
     console.log("Webhook validated successfully!");
     res.json({ "hub.challenge": challenge });
@@ -100,7 +95,7 @@ app.get("/webhook", (req, res) => {
 
 app.post("/webhook", async (req, res) => {
   console.log("Received webhook event:", JSON.stringify(req.body, null, 2));
-  res.status(200).send("EVENT_RECEIVED");
+  res.status(200).send("EVENT_RECEIVED"); // Acknowledge immediately
 
   if (
     req.body.object_type === "activity" &&
@@ -108,10 +103,9 @@ app.post("/webhook", async (req, res) => {
   ) {
     const athleteId = req.body.owner_id;
     try {
-      const user = await getToken(athleteId);
-      if (!user) throw new Error(`No token found for athlete ${athleteId}`);
-
-      // This is where you would add token refresh logic if needed
+      const user = await getValidToken(athleteId);
+      if (!user)
+        throw new Error(`Could not get valid token for athlete ${athleteId}`);
 
       const activityResponse = await axios.get(
         `${STRAVA_API_BASE_URL}/activities/${req.body.object_id}`,
@@ -134,7 +128,7 @@ async function postActivityToDiscord(activity, user) {
     .toISOString()
     .substr(11, 8);
   const elevation = Math.round(activity.total_elevation_gain);
-  const athleteName = user.firstName || "An athlete"; // Use the stored name
+  const athleteName = user.firstName || "An athlete";
   const activityType = activity.sport_type.toLowerCase();
 
   const content = `[${athleteName}](https://www.strava.com/activities/${activity.id}) just went for a ${activityType} of ${distanceKm}km for ${movingTime}, climbing ${elevation}m.`;
@@ -155,10 +149,43 @@ async function postActivityToDiscord(activity, user) {
   }
 }
 
+// NEW: Gets a user's token and refreshes it if it's expired
+async function getValidToken(athleteId) {
+  const user = await getToken(athleteId);
+  if (!user) return null;
+
+  // Check if the token is expired or will expire in the next 5 minutes
+  if (Date.now() / 1000 > user.expiresAt - 300) {
+    console.log(`Token for athlete ${athleteId} is expired. Refreshing...`);
+    try {
+      const response = await axios.post(STRAVA_TOKEN_URL, {
+        client_id: STRAVA_CLIENT_ID,
+        client_secret: STRAVA_CLIENT_SECRET,
+        grant_type: "refresh_token",
+        refresh_token: user.refreshToken,
+      });
+
+      const { access_token, refresh_token, expires_at } = response.data;
+      const newTokens = { access_token, refresh_token, expires_at };
+      await saveToken(athleteId, user.firstName, newTokens); // Resave with new tokens
+
+      console.log(`Token refreshed successfully for athlete ${athleteId}.`);
+      return { ...user, accessToken: access_token, expiresAt: expires_at };
+    } catch (error) {
+      console.error(
+        `Failed to refresh token for athlete ${athleteId}:`,
+        error.response ? error.response.data : error.message
+      );
+      return null;
+    }
+  }
+
+  return user; // Token is still valid
+}
+
 async function subscribeToStravaWebhooks() {
   const callbackUrl = `${APP_URL}/webhook`;
   const pushSubscriptionsUrl = `${STRAVA_API_BASE_URL}/push_subscriptions`;
-
   try {
     const getResponse = await axios.get(pushSubscriptionsUrl, {
       params: {
@@ -166,11 +193,9 @@ async function subscribeToStravaWebhooks() {
         client_secret: STRAVA_CLIENT_SECRET,
       },
     });
-
     const existingSubscription = getResponse.data.find(
       (sub) => sub.callback_url === callbackUrl
     );
-
     if (existingSubscription) {
       console.log(
         "Webhook subscription is already active. ID:",

@@ -1,7 +1,6 @@
 const { Pool } = require("pg");
 
 // The pool will use the DATABASE_URL environment variable automatically.
-// The SSL configuration has been removed to allow connections to internal, non-SSL databases.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
